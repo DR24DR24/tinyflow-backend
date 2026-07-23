@@ -1,9 +1,11 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from pydantic import BaseModel
-from celery.result import AsyncResult
 
-from celery_app import celery_app
-
+import time
+import boto3
+import os
+import json
+import uuid
 import socket
 
 
@@ -14,80 +16,199 @@ app = FastAPI(
 )
 
 
-# -----------------------------
-# Request models
-# -----------------------------
+# ==================================================
+# AWS CLIENTS
+# ==================================================
+
+cloudwatch = boto3.client(
+    "cloudwatch",
+    region_name=os.getenv(
+        "AWS_REGION",
+        "eu-central-1"
+    )
+)
+
+
+sqs = boto3.client(
+    "sqs",
+    region_name=os.getenv(
+        "AWS_REGION",
+        "eu-central-1"
+    )
+)
+
+
+QUEUE_URL = os.getenv("QUEUE_URL")
+
+
+# ==================================================
+# LAST REQUEST METRIC
+# ==================================================
+
+@app.middleware("http")
+async def update_last_request_time(
+    request: Request,
+    call_next
+):
+
+    response = await call_next(request)
+
+    try:
+
+        cloudwatch.put_metric_data(
+
+            Namespace="TinyFlow/API",
+
+            MetricData=[
+
+                {
+                    "MetricName": "LastRequestTime",
+
+                    "Value": time.time(),
+
+                    "Unit": "Seconds"
+                }
+
+            ]
+
+        )
+
+    except Exception as e:
+
+        print(
+            f"CloudWatch metric error: {e}"
+        )
+
+
+    return response
+
+
+
+# ==================================================
+# REQUEST MODELS
+# ==================================================
 
 class OptimizationRequest(BaseModel):
+
     model_name: str
 
 
-# -----------------------------
-# Health check
-# -----------------------------
+
+# ==================================================
+# HEALTH
+# ==================================================
 
 @app.get("/health")
 def health():
+
     return {
+
         "status": "ok",
+
         "service": "tinyflow-api",
+
         "host": socket.gethostname()
+
     }
 
 
-# -----------------------------
-# Root endpoint
-# -----------------------------
+
+# ==================================================
+# ROOT
+# ==================================================
 
 @app.get("/")
 def root():
+
     return {
+
         "project": "TinyFlow",
+
         "message": "API is running",
+
         "version": "0.1.0",
+
         "host": socket.gethostname()
+
     }
 
 
-# -----------------------------
-# Create optimization task
-# -----------------------------
+
+# ==================================================
+# CREATE OPTIMIZATION TASK
+# ==================================================
 
 @app.post("/optimize")
-def optimize(request: OptimizationRequest):
+def optimize(
+    request: OptimizationRequest
+):
 
-    task = celery_app.send_task(
-        "tasks.optimize_model",
-        args=[
-            request.model_name
-        ]
-    )
+    task_id = str(uuid.uuid4())
 
-    return {
-        "task_id": task.id,
-        "model": request.model_name,
-        "status": "queued"
+
+    message = {
+
+        "task_id": task_id,
+
+        "model_name": request.model_name,
+
+        "status": "queued",
+
+        "created_at": time.time()
+
     }
 
 
-# -----------------------------
-# Task status
-# -----------------------------
+    try:
+
+        sqs.send_message(
+
+            QueueUrl=QUEUE_URL,
+
+            MessageBody=json.dumps(message)
+
+        )
+
+
+    except Exception as e:
+
+        return {
+
+            "status": "error",
+
+            "message": str(e)
+
+        }
+
+
+    return {
+
+        "task_id": task_id,
+
+        "model": request.model_name,
+
+        "status": "queued"
+
+    }
+
+
+# ==================================================
+# TASK STATUS
+# Пока заглушка
+# Worker добавим позже
+# ==================================================
 
 @app.get("/tasks/{task_id}")
 def task_status(task_id: str):
 
-    result = AsyncResult(
-        task_id,
-        app=celery_app
-    )
-
-    response = {
+    return {
         "task_id": task_id,
-        "status": result.status
+        "status": "completed",
+        "result": {
+            "worker": "mock-worker",
+            "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
     }
 
-    if result.ready():
-        response["result"] = result.result
 
-    return response
+

@@ -1,0 +1,1 @@
+{"statusCode": 200, "headers": {"Content-Type": "application/json"}, "body": "{\"task_id\": \"3a76c8bb-7d10-4083-93dd-b474f26b5044\", \"model\": \"resnet18\", \"status\": \"queued\"}"}

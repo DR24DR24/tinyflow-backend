@@ -1,6 +1,4 @@
 fastapi
 uvicorn
-celery
-redis
 pydantic
-python-dotenv
+boto3
