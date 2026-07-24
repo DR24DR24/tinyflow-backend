@@ -8,6 +8,9 @@ import json
 import uuid
 import socket
 
+from init_db import init_db
+from database import get_connection
+
 
 app = FastAPI(
     title="TinyFlow API",
@@ -142,6 +145,9 @@ def root():
 def optimize(
     request: OptimizationRequest
 ):
+    print("Initializing database...")
+    init_db()
+    print("Database ready")
 
     task_id = str(uuid.uuid4())
 
@@ -160,6 +166,32 @@ def optimize(
 
 
     try:
+
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            INSERT INTO tasks
+            (
+                task_id,
+                model_name,
+                status,
+                created_at
+            )
+            VALUES (%s, %s, %s, NOW())
+            """,
+            (
+                task_id,
+                request.model_name,
+                "queued"
+            )
+        )
+
+        conn.commit()
+
+        cur.close()
+        conn.close()
 
         sqs.send_message(
 
@@ -187,7 +219,7 @@ def optimize(
 
         "model": request.model_name,
 
-        "status": "queued"
+        "status": "queued (API)"
 
     }
 
@@ -200,15 +232,88 @@ def optimize(
 
 @app.get("/tasks/{task_id}")
 def task_status(task_id: str):
+    try:
 
-    return {
-        "task_id": task_id,
-        "status": "completed",
-        "result": {
-            "worker": "mock-worker",
-            "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")
+        conn = get_connection()
+        cur = conn.cursor()
+
+        cur.execute(
+            """
+            SELECT
+                task_id,
+                status,
+                result
+            FROM tasks
+            WHERE task_id = %s
+            """,
+            (task_id,)
+        )
+
+        task = cur.fetchone()
+
+        cur.close()
+        conn.close()
+
+
+        if task is None:
+            return {
+                "task_id": task_id,
+                "status": "not_found"
+            }
+
+
+        return {
+
+            "task_id": str(task[0]),
+            "status": task[1],
+            "result": task[2]
+
         }
-    }
 
+
+    except Exception as e:
+
+        return {
+            "task_id": task_id,
+            "status": "error",
+            "message": str(e)
+        }
+
+    # return {
+    #     "task_id": task_id,
+    #     "status": "completed",
+    #     "result": {
+    #         "worker": "mock-worker",
+    #         "finished_at": time.strftime("%Y-%m-%d %H:%M:%S")
+    #     }
+    # }
+
+
+@app.get("/debug/tasks")
+def debug_tasks():
+
+    conn = get_connection()
+
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            task_id,
+            model_name,
+            status,
+            created_at,
+            finished_at
+        FROM tasks
+        ORDER BY created_at DESC
+        """
+    )
+
+    rows = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
+    return rows
 
 
